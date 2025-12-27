@@ -875,8 +875,8 @@ const hosted_function_ptrs = [_]builtins.host_abi.HostedFn{
     hostedWebServerAccept, // WebServer.accept! (index 2)
     hostedWebServerBroadcast, // WebServer.broadcast! (index 3)
     hostedWebServerClose, // WebServer.close! (index 4)
-    hostedWebServerSend, // WebServer.send! (index 5) - SWAPPED
-    hostedWebServerListen, // WebServer.listen! (index 6) - SWAPPED
+    hostedWebServerListen, // WebServer.listen! (index 5) - 'l' before 's' alphabetically
+    hostedWebServerSend, // WebServer.send! (index 6)
 };
 
 /// Platform host entrypoint
