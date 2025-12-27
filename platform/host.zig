@@ -625,33 +625,42 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
     stderr.writeAll("DEBUG hostedWebServerAccept called\n") catch {};
     _ = args_ptr;
 
-    // Debug: print sizes of types
-    var size_buf: [256]u8 = undefined;
-    const size_info = std.fmt.bufPrint(&size_buf, "DEBUG: RocStr size={}, align={}\n", .{ @sizeOf(RocStr), @alignOf(RocStr) }) catch "?";
+    // Event union - Roc uses alphabetical ordering for discriminants
+    // Alphabetical order:
+    //   Connected { clientId : U64 } = 0
+    //   Disconnected { clientId : U64 } = 1
+    //   Error { message : Str } = 2
+    //   Message { clientId : U64, text : Str } = 3
+    //   Shutdown = 4
+    //
+    // Layout: payload union first, then discriminant u8 (like other platform examples)
+    const EventResult = extern struct {
+        payload: extern union {
+            // Connected/Disconnected: just clientId
+            client_id: u64,
+            // Error: just message
+            err_message: RocStr,
+            // Message: clientId + text (largest variant)
+            message: extern struct {
+                client_id: u64,
+                text: RocStr,
+            },
+        },
+        discriminant: u8,
+    };
+
+    const result: *EventResult = @ptrCast(@alignCast(ret_ptr));
+
+    // Debug: print struct size info
+    var size_buf: [128]u8 = undefined;
+    const size_info = std.fmt.bufPrint(&size_buf, "DEBUG: EventResult size={}, payload offset={}, discriminant offset={}\n", .{ @sizeOf(EventResult), @offsetOf(EventResult, "payload"), @offsetOf(EventResult, "discriminant") }) catch "?";
     stderr.writeAll(size_info) catch {};
 
-    // Event union - Roc tag unions have payload first, discriminant at end
-    // Alphabetical order for Roc:
-    // Connected { clientId : U64 } = 0
-    // Disconnected { clientId : U64 } = 1
-    // Error { message : Str } = 2
-    // Message { clientId : U64, text : Str } = 3
-    // Shutdown = 4
-    //
-    // Write directly to raw bytes to test different layouts
-    // Try layout: [payload: 32][discriminant: u8] = 33 bytes, no padding
-    // Payload first, discriminant as very last byte
-    const raw_ptr: [*]u8 = @ptrCast(ret_ptr);
-
-    // Debug: print actual ret_ptr info
-    var ptr_buf: [128]u8 = undefined;
-    const ptr_info = std.fmt.bufPrint(&ptr_buf, "DEBUG: ret_ptr={*}, writing raw bytes\n", .{ret_ptr}) catch "?";
-    stderr.writeAll(ptr_info) catch {};
     const host: *HostEnv = @ptrCast(@alignCast(ops.env));
 
     const server = host.server orelse {
-        // Shutdown = discriminant 4 at byte 32 (after payload)
-        raw_ptr[32] = 4;
+        // Shutdown = discriminant 4 (alphabetical)
+        result.discriminant = 4;
         return;
     };
 
@@ -664,28 +673,71 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
             }
             stderr.writeAll("DEBUG accept: got error, returning Error event\n") catch {};
             const msg = std.fmt.allocPrint(server.allocator, "Error: {}", .{err}) catch "Error";
-            // Error = discriminant 2, RocStr at offset 0, discriminant at byte 32
-            const err_str_ptr: *align(1) RocStr = @ptrCast(@alignCast(raw_ptr));
-            err_str_ptr.* = RocStr.init(msg.ptr, msg.len, ops);
-            raw_ptr[32] = 2;
+            // Error = discriminant 2 (alphabetical)
+            result.payload.err_message = RocStr.init(msg.ptr, msg.len, ops);
+            result.discriminant = 2;
             return;
         };
 
 
-        // DEBUG: Always return Shutdown to test simplest case
-        stderr.writeAll("DEBUG: Returning hardcoded Shutdown (discriminant=4)\n") catch {};
-        @memset(raw_ptr[0..40], 0); // clear all bytes
-        raw_ptr[32] = 4; // Shutdown discriminant
-        // Print bytes
-        stderr.writeAll("DEBUG bytes: ") catch {};
-        for (raw_ptr[0..40]) |b| {
-            var buf: [4]u8 = undefined;
-            _ = std.fmt.bufPrint(&buf, "{x:0>2} ", .{b}) catch {};
-            stderr.writeAll(&buf) catch {};
+        switch (event) {
+            .connected => |client_id| {
+                // Connected = discriminant 0 (alphabetical)
+                result.payload.client_id = client_id;
+                result.discriminant = 0;
+                stderr.writeAll("DEBUG accept: returning Connected, discriminant=0\n") catch {};
+                // Print raw bytes
+                const result_bytes = @as([*]const u8, @ptrCast(result))[0..@sizeOf(EventResult)];
+                stderr.writeAll("DEBUG bytes: ") catch {};
+                for (result_bytes) |b| {
+                    var buf: [4]u8 = undefined;
+                    _ = std.fmt.bufPrint(&buf, "{x:0>2} ", .{b}) catch {};
+                    stderr.writeAll(&buf) catch {};
+                }
+                stderr.writeAll("\n") catch {};
+                return;
+            },
+            .disconnected => |client_id| {
+                // Disconnected = discriminant 1 (alphabetical)
+                result.payload.client_id = client_id;
+                result.discriminant = 1;
+                stderr.writeAll("DEBUG accept: returning Disconnected, discriminant=1\n") catch {};
+                return;
+            },
+            .message => |msg| {
+                // Message = discriminant 3 (alphabetical)
+                result.payload.message.client_id = msg.client_id;
+                result.payload.message.text = RocStr.init(msg.text.ptr, msg.text.len, ops);
+                result.discriminant = 3;
+                stderr.writeAll("DEBUG accept: returning Message, discriminant=3\n") catch {};
+                // Print raw bytes
+                var dbg_buf: [128]u8 = undefined;
+                const dbg_str = std.fmt.bufPrint(&dbg_buf, "DEBUG: client_id={}, text_len={}\n", .{ msg.client_id, msg.text.len }) catch "?";
+                stderr.writeAll(dbg_str) catch {};
+                const result_bytes = @as([*]const u8, @ptrCast(result))[0..@sizeOf(EventResult)];
+                stderr.writeAll("DEBUG bytes: ") catch {};
+                for (result_bytes) |b| {
+                    var buf: [4]u8 = undefined;
+                    _ = std.fmt.bufPrint(&buf, "{x:0>2} ", .{b}) catch {};
+                    stderr.writeAll(&buf) catch {};
+                }
+                stderr.writeAll("\n") catch {};
+                return;
+            },
+            .err => |msg| {
+                // Error = discriminant 2 (alphabetical)
+                result.payload.err_message = RocStr.init(msg.ptr, msg.len, ops);
+                result.discriminant = 2;
+                stderr.writeAll("DEBUG accept: returning Error, discriminant=2\n") catch {};
+                return;
+            },
+            .shutdown => {
+                // Shutdown = discriminant 4 (alphabetical)
+                result.discriminant = 4;
+                stderr.writeAll("DEBUG accept: returning Shutdown, discriminant=4\n") catch {};
+                return;
+            },
         }
-        stderr.writeAll("\n") catch {};
-        _ = event;
-        return;
     }
 }
 
