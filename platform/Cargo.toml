@@ -1,0 +1,18 @@
+[package]
+name = "chatserver-platform"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "host"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+sha1 = "0.10"
+base64 = "0.21"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+

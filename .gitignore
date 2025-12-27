@@ -8,6 +8,9 @@ frontend/elm-stuff/
 # Platform build outputs
 platform/targets/*/libhost.a
 
+# Rust build artifacts
+platform/target/
+
 # Editor files
 *.swp
 *.swo
@@ -21,3 +24,6 @@ Thumbs.db
 
 # Roc cache
 .roc/
+
+# Built binary
+main
