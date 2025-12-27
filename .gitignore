@@ -1,0 +1,23 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Elm build artifacts
+frontend/elm-stuff/
+
+# Platform build outputs
+platform/targets/*/libhost.a
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Roc cache
+.roc/
