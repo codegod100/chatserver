@@ -1,0 +1,17 @@
+.{
+    .name = .chatserver,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .roc = .{
+            .url = "git+https://github.com/roc-lang/roc#49a7f536002965bb0e6c53bb82a1814f08340052",
+            .hash = "roc-0.0.0-NAC9w-7vhQC7MudcZB29RgpMRABkoruyarLdUr5Nyh3s",
+        },
+    },
+    .fingerprint = 0xd128d4f1272f1732,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "platform",
+    },
+}
