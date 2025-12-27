@@ -620,121 +620,98 @@ fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
 }
 
 /// WebServer.accept! : () => Event
+/// WebServer.accept! : () => Str
+/// Returns a JSON string describing the event:
+///   {"type":"connected","clientId":123}
+///   {"type":"disconnected","clientId":123}
+///   {"type":"message","clientId":123,"text":"hello"}
+///   {"type":"error","message":"error text"}
+///   {"type":"shutdown"}
 fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
     const stderr = std.fs.File.stderr();
     stderr.writeAll("DEBUG hostedWebServerAccept called\n") catch {};
     _ = args_ptr;
 
-    // Event union - Roc uses alphabetical ordering for discriminants
-    // Alphabetical order:
-    //   Connected { clientId : U64 } = 0
-    //   Disconnected { clientId : U64 } = 1
-    //   Error { message : Str } = 2
-    //   Message { clientId : U64, text : Str } = 3
-    //   Shutdown = 4
-    //
-    // Layout: payload union first, then discriminant u8 (like other platform examples)
-    const EventResult = extern struct {
-        payload: extern union {
-            // Connected/Disconnected: just clientId
-            client_id: u64,
-            // Error: just message
-            err_message: RocStr,
-            // Message: clientId + text (largest variant)
-            message: extern struct {
-                client_id: u64,
-                text: RocStr,
-            },
-        },
-        discriminant: u8,
-    };
-
-    const result: *EventResult = @ptrCast(@alignCast(ret_ptr));
-
-    // Debug: print struct size info
-    var size_buf: [128]u8 = undefined;
-    const size_info = std.fmt.bufPrint(&size_buf, "DEBUG: EventResult size={}, payload offset={}, discriminant offset={}\n", .{ @sizeOf(EventResult), @offsetOf(EventResult, "payload"), @offsetOf(EventResult, "discriminant") }) catch "?";
-    stderr.writeAll(size_info) catch {};
-
+    const result: *RocStr = @ptrCast(@alignCast(ret_ptr));
     const host: *HostEnv = @ptrCast(@alignCast(ops.env));
 
     const server = host.server orelse {
-        // Shutdown = discriminant 4 (alphabetical)
-        result.discriminant = 4;
+        // No server running, return shutdown event
+        const json = "{\"type\":\"shutdown\"}";
+        result.* = RocStr.init(json.ptr, json.len, ops);
         return;
     };
 
     while (true) {
-
         const event = server.accept() catch |err| {
             if (err == error.ControlFrame or err == error.NotWebSocket) {
-                stderr.writeAll("DEBUG accept: ControlFrame or NotWebSocket, continuing\n") catch {};
                 continue;
             }
-            stderr.writeAll("DEBUG accept: got error, returning Error event\n") catch {};
-            const msg = std.fmt.allocPrint(server.allocator, "Error: {}", .{err}) catch "Error";
-            // Error = discriminant 2 (alphabetical)
-            result.payload.err_message = RocStr.init(msg.ptr, msg.len, ops);
-            result.discriminant = 2;
+            // Return error as JSON
+            var buf: [256]u8 = undefined;
+            const json = std.fmt.bufPrint(&buf, "{{\"type\":\"error\",\"message\":\"{}\"}}", .{err}) catch "{\"type\":\"error\",\"message\":\"unknown\"}";
+            result.* = RocStr.init(json.ptr, json.len, ops);
             return;
         };
 
-
         switch (event) {
             .connected => |client_id| {
-                // Connected = discriminant 0 (alphabetical)
-                result.payload.client_id = client_id;
-                result.discriminant = 0;
-                stderr.writeAll("DEBUG accept: returning Connected, discriminant=0\n") catch {};
-                // Print raw bytes
-                const result_bytes = @as([*]const u8, @ptrCast(result))[0..@sizeOf(EventResult)];
-                stderr.writeAll("DEBUG bytes: ") catch {};
-                for (result_bytes) |b| {
-                    var buf: [4]u8 = undefined;
-                    _ = std.fmt.bufPrint(&buf, "{x:0>2} ", .{b}) catch {};
-                    stderr.writeAll(&buf) catch {};
-                }
-                stderr.writeAll("\n") catch {};
+                var buf: [128]u8 = undefined;
+                const json = std.fmt.bufPrint(&buf, "{{\"type\":\"connected\",\"clientId\":{}}}", .{client_id}) catch "{\"type\":\"error\",\"message\":\"format error\"}";
+                result.* = RocStr.init(json.ptr, json.len, ops);
+                stderr.writeAll("DEBUG accept: returning connected JSON\n") catch {};
                 return;
             },
             .disconnected => |client_id| {
-                // Disconnected = discriminant 1 (alphabetical)
-                result.payload.client_id = client_id;
-                result.discriminant = 1;
-                stderr.writeAll("DEBUG accept: returning Disconnected, discriminant=1\n") catch {};
+                var buf: [128]u8 = undefined;
+                const json = std.fmt.bufPrint(&buf, "{{\"type\":\"disconnected\",\"clientId\":{}}}", .{client_id}) catch "{\"type\":\"error\",\"message\":\"format error\"}";
+                result.* = RocStr.init(json.ptr, json.len, ops);
+                stderr.writeAll("DEBUG accept: returning disconnected JSON\n") catch {};
                 return;
             },
             .message => |msg| {
-                // Message = discriminant 3 (alphabetical)
-                result.payload.message.client_id = msg.client_id;
-                result.payload.message.text = RocStr.init(msg.text.ptr, msg.text.len, ops);
-                result.discriminant = 3;
-                stderr.writeAll("DEBUG accept: returning Message, discriminant=3\n") catch {};
-                // Print raw bytes
-                var dbg_buf: [128]u8 = undefined;
-                const dbg_str = std.fmt.bufPrint(&dbg_buf, "DEBUG: client_id={}, text_len={}\n", .{ msg.client_id, msg.text.len }) catch "?";
-                stderr.writeAll(dbg_str) catch {};
-                const result_bytes = @as([*]const u8, @ptrCast(result))[0..@sizeOf(EventResult)];
-                stderr.writeAll("DEBUG bytes: ") catch {};
-                for (result_bytes) |b| {
-                    var buf: [4]u8 = undefined;
-                    _ = std.fmt.bufPrint(&buf, "{x:0>2} ", .{b}) catch {};
-                    stderr.writeAll(&buf) catch {};
+                // For message, we need to escape the text for JSON
+                var buf: [4096]u8 = undefined;
+                var writer = std.io.fixedBufferStream(&buf);
+                writer.writer().print("{{\"type\":\"message\",\"clientId\":{},\"text\":\"", .{msg.client_id}) catch {};
+                // Escape the message text
+                for (msg.text) |c| {
+                    switch (c) {
+                        '"' => writer.writer().writeAll("\\\"") catch {},
+                        '\\' => writer.writer().writeAll("\\\\") catch {},
+                        '\n' => writer.writer().writeAll("\\n") catch {},
+                        '\r' => writer.writer().writeAll("\\r") catch {},
+                        '\t' => writer.writer().writeAll("\\t") catch {},
+                        else => writer.writer().writeByte(c) catch {},
+                    }
                 }
-                stderr.writeAll("\n") catch {};
+                writer.writer().writeAll("\"}") catch {};
+                const json = buf[0..writer.pos];
+                result.* = RocStr.init(json.ptr, json.len, ops);
+                stderr.writeAll("DEBUG accept: returning message JSON\n") catch {};
                 return;
             },
             .err => |msg| {
-                // Error = discriminant 2 (alphabetical)
-                result.payload.err_message = RocStr.init(msg.ptr, msg.len, ops);
-                result.discriminant = 2;
-                stderr.writeAll("DEBUG accept: returning Error, discriminant=2\n") catch {};
+                var buf: [512]u8 = undefined;
+                var writer = std.io.fixedBufferStream(&buf);
+                writer.writer().writeAll("{\"type\":\"error\",\"message\":\"") catch {};
+                for (msg) |c| {
+                    switch (c) {
+                        '"' => writer.writer().writeAll("\\\"") catch {},
+                        '\\' => writer.writer().writeAll("\\\\") catch {},
+                        else => writer.writer().writeByte(c) catch {},
+                    }
+                }
+                writer.writer().writeAll("\"}") catch {};
+                const json = buf[0..writer.pos];
+                result.* = RocStr.init(json.ptr, json.len, ops);
+                stderr.writeAll("DEBUG accept: returning error JSON\n") catch {};
                 return;
             },
             .shutdown => {
-                // Shutdown = discriminant 4 (alphabetical)
-                result.discriminant = 4;
-                stderr.writeAll("DEBUG accept: returning Shutdown, discriminant=4\n") catch {};
+                const json = "{\"type\":\"shutdown\"}";
+                result.* = RocStr.init(json.ptr, json.len, ops);
+                stderr.writeAll("DEBUG accept: returning shutdown JSON\n") catch {};
                 return;
             },
         }
@@ -868,15 +845,30 @@ fn hostedStdoutLine(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_pt
     stdout.writeAll("\n") catch {};
 }
 
-/// Array of hosted function pointers, sorted alphabetically by fully-qualified name
+/// Debug wrapper to log which index is being called
+fn debugWrapper(comptime index: usize, comptime name: []const u8, actual_fn: builtins.host_abi.HostedFn) builtins.host_abi.HostedFn {
+    const S = struct {
+        fn wrapper(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+            const stderr = std.fs.File.stderr();
+            var buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "DEBUG: Index {} called (expected: {s})\n", .{ index, name }) catch "DEBUG: ???\n";
+            stderr.writeAll(msg) catch {};
+            actual_fn(ops, ret_ptr, args_ptr);
+        }
+    };
+    return S.wrapper;
+}
+
+/// Array of hosted function pointers, sorted by module name alphabetically,
+/// then by function name alphabetically within each module.
 const hosted_function_ptrs = [_]builtins.host_abi.HostedFn{
-    hostedStderrLine, // Stderr.line! (index 0)
-    hostedStdoutLine, // Stdout.line! (index 1)
-    hostedWebServerAccept, // WebServer.accept! (index 2)
-    hostedWebServerBroadcast, // WebServer.broadcast! (index 3)
-    hostedWebServerClose, // WebServer.close! (index 4)
-    hostedWebServerListen, // WebServer.listen! (index 5) - 'l' before 's' alphabetically
-    hostedWebServerSend, // WebServer.send! (index 6)
+    debugWrapper(0, "Stderr.line!", hostedStderrLine),
+    debugWrapper(1, "Stdout.line!", hostedStdoutLine),
+    debugWrapper(2, "WebServer.accept!", hostedWebServerAccept),
+    debugWrapper(3, "WebServer.broadcast!", hostedWebServerBroadcast),
+    debugWrapper(4, "WebServer.close!", hostedWebServerClose),
+    debugWrapper(5, "WebServer.listen!", hostedWebServerListen),
+    debugWrapper(6, "WebServer.send!", hostedWebServerSend),
 };
 
 /// Platform host entrypoint

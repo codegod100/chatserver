@@ -21,14 +21,16 @@ chatserver/
 │       └── Main.elm    # Elm chat frontend
 ├── static/
 │   └── index.html      # HTML wrapper with WebSocket JS
-├── build.zig
-└── build.zig.zon
+├── build.sh            # Main build script
+├── build_zig.sh        # Zig host build script
+├── build.zig           # Zig build configuration
+└── build.zig.zon       # Zig dependency manifest
 ```
 
 ## Prerequisites
 
-- [Zig](https://ziglang.org/download/) (version 0.15.2 or compatible)
-- [Roc](https://www.roc-lang.org/) (nightly build)
+- [Zig](https://ziglang.org/download/) (0.15.2 or later)
+- [Roc](https://www.roc-lang.org/) (latest version)
 - [Elm](https://elm-lang.org/) (version 0.19.1)
 
 ## Building
@@ -37,10 +39,20 @@ chatserver/
 
 ```bash
 cd chatserver
-zig build native -Doptimize=ReleaseSafe
+./build_zig.sh
 ```
 
-This compiles the WebSocket server host for your native platform.
+Or use the Zig build system directly:
+
+```bash
+zig build native
+```
+
+This compiles the WebSocket server host for your native platform. To build for all targets:
+
+```bash
+zig build
+```
 
 ### 2. Compile the Elm frontend
 
@@ -54,6 +66,12 @@ elm make src/Main.elm --optimize --output=../static/elm.js
 ```bash
 cd ..
 roc build app/main.roc
+```
+
+Or use the all-in-one build script:
+
+```bash
+./build.sh
 ```
 
 ## Running
@@ -106,13 +124,19 @@ Communication happens through Elm ports, with JavaScript handling the actual Web
 
 ## Quick Start Script
 
-You can use this one-liner to build and run everything:
+You can use the build script to build and run everything:
 
 ```bash
 cd chatserver && \
-zig build native -Doptimize=ReleaseSafe && \
+./build_zig.sh && \
 cd frontend && elm make src/Main.elm --optimize --output=../static/elm.js && \
 cd .. && roc build app/main.roc && ./app/main
+```
+
+Or simply:
+
+```bash
+./build.sh && ./app/main
 ```
 
 ## Development
@@ -120,7 +144,7 @@ cd .. && roc build app/main.roc && ./app/main
 For development, you may want to build without optimizations:
 
 ```bash
-zig build native
+zig build native -Doptimize=Debug
 ```
 
 And compile Elm in debug mode:

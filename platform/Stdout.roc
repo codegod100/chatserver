@@ -1,3 +1,3 @@
-Stdout := [].{
+Stdout :: [].{
     line! : Str => {}
 }

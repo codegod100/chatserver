@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== Building Roc WebSocket Chat Server ==="
+echo "=== Building Roc WebSocket Chat Server (Zig Platform) ==="
 
 # Get the script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,8 +10,14 @@ cd "$SCRIPT_DIR"
 # Step 1: Build the Zig host library
 echo ""
 echo "1. Building Zig host library..."
-zig build x64musl
-echo "   ✓ Host library built"
+if command -v zig &> /dev/null; then
+    zig build native
+    echo "   ✓ Host library built"
+else
+    echo "   ⚠ Zig not found - skipping host library build"
+    echo "   Install Zig from https://ziglang.org/download/ and run:"
+    echo "   zig build native"
+fi
 
 # Step 2: Build Elm frontend (if elm is available)
 echo ""
@@ -31,7 +37,8 @@ fi
 echo ""
 echo "3. Building Roc application..."
 if command -v roc &> /dev/null; then
-    ../roc/zig-out/bin/roc app/main.roc
+    # Use --linker=legacy flag for Linux when using json package (issue #3609)
+    roc build app/main.roc --linker=legacy
     echo "   ✓ Roc application built"
 else
     echo "   ⚠ Roc not found - skipping application build"
@@ -42,7 +49,7 @@ echo ""
 echo "=== Build Complete ==="
 echo ""
 echo "To run the chat server:"
-echo "  ./chatserver"
+echo "  ./app/main"
 echo ""
 echo "Then open your browser to:"
 echo "  http://localhost:8080"
