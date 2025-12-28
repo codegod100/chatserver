@@ -1,10 +1,12 @@
 port module Main exposing (main)
 
 import Browser
+import Browser.Dom as Dom
 import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing (..)
 import Json.Decode as Decode exposing (Decoder)
+import Task
 
 
 -- PORTS
@@ -77,6 +79,7 @@ type Msg
     | SendClicked
     | MessageReceived String
     | ConnectionChanged Bool
+    | NoOp
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -111,7 +114,7 @@ update msg model =
                         | messages = model.messages ++ [ message ]
                         , myClientId = newClientId
                       }
-                    , Cmd.none
+                    , scrollToBottom
                     )
 
                 Err _ ->
@@ -136,8 +139,21 @@ update msg model =
                 | connected = isConnected
                 , messages = model.messages ++ [ statusMessage ]
               }
-            , Cmd.none
+            , scrollToBottom
             )
+
+        NoOp ->
+            ( model, Cmd.none )
+
+
+scrollToBottom : Cmd Msg
+scrollToBottom =
+    Dom.getViewportOf "messages"
+        |> Task.andThen
+            (\info ->
+                Dom.setViewportOf "messages" 0 info.scene.height
+            )
+        |> Task.attempt (\_ -> NoOp)
 
 
 extractClientId : String -> Maybe Int
