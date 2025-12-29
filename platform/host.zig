@@ -562,6 +562,64 @@ const WebSocketServer = struct {
 var global_server: ?*WebSocketServer = null;
 
 // ============================================================================
+// JSON Parsing Helpers
+// ============================================================================
+
+fn jsonGetString(json: []const u8, key: []const u8) ?[]const u8 {
+    // Build the key pattern: "key":
+    var pattern_buf: [256]u8 = undefined;
+    const pattern = std.fmt.bufPrint(&pattern_buf, "\"{s}\":", .{key}) catch return null;
+
+    // Find the key
+    const key_pos = std.mem.indexOf(u8, json, pattern) orelse return null;
+    var pos = key_pos + pattern.len;
+
+    // Skip whitespace
+    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t' or json[pos] == '\n' or json[pos] == '\r')) {
+        pos += 1;
+    }
+
+    if (pos >= json.len or json[pos] != '"') return null;
+    pos += 1; // Skip opening quote
+
+    const start = pos;
+    // Find closing quote (handle escapes)
+    while (pos < json.len) {
+        if (json[pos] == '\\' and pos + 1 < json.len) {
+            pos += 2; // Skip escape sequence
+        } else if (json[pos] == '"') {
+            return json[start..pos];
+        } else {
+            pos += 1;
+        }
+    }
+    return null;
+}
+
+fn jsonGetNumber(json: []const u8, key: []const u8) u64 {
+    // Build the key pattern: "key":
+    var pattern_buf: [256]u8 = undefined;
+    const pattern = std.fmt.bufPrint(&pattern_buf, "\"{s}\":", .{key}) catch return 0;
+
+    // Find the key
+    const key_pos = std.mem.indexOf(u8, json, pattern) orelse return 0;
+    var pos = key_pos + pattern.len;
+
+    // Skip whitespace
+    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t' or json[pos] == '\n' or json[pos] == '\r')) {
+        pos += 1;
+    }
+
+    // Parse number
+    var result: u64 = 0;
+    while (pos < json.len and json[pos] >= '0' and json[pos] <= '9') {
+        result = result * 10 + (json[pos] - '0');
+        pos += 1;
+    }
+    return result;
+}
+
+// ============================================================================
 // Hosted Functions
 // ============================================================================
 
@@ -845,15 +903,55 @@ fn hostedStdoutLine(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_pt
     stdout.writeAll("\n") catch {};
 }
 
+/// Json.get_string! : Str, Str => Str
+fn hostedJsonGetString(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    const Args = extern struct {
+        json: RocStr,
+        key: RocStr,
+    };
+    const args: *Args = @ptrCast(@alignCast(args_ptr));
+    const result: *RocStr = @ptrCast(@alignCast(ret_ptr));
+
+    const json = getAsSlice(&args.json);
+    const key = getAsSlice(&args.key);
+
+    if (jsonGetString(json, key)) |value| {
+        result.* = RocStr.init(value.ptr, value.len, ops);
+    } else {
+        result.* = RocStr.empty();
+    }
+}
+
+/// Json.get_number! : Str, Str => U64
+fn hostedJsonGetNumber(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    _ = ops;
+    const Args = extern struct {
+        json: RocStr,
+        key: RocStr,
+    };
+    const args: *Args = @ptrCast(@alignCast(args_ptr));
+    const result: *u64 = @ptrCast(@alignCast(ret_ptr));
+
+    const json = getAsSlice(&args.json);
+    const key = getAsSlice(&args.key);
+
+    result.* = jsonGetNumber(json, key);
+}
+
 /// Debug wrapper to log which index is being called
+var global_last_time: i64 = 0;
+
 fn debugWrapper(comptime index: usize, comptime name: []const u8, actual_fn: builtins.host_abi.HostedFn) builtins.host_abi.HostedFn {
     const S = struct {
         fn wrapper(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
             const stderr = std.fs.File.stderr();
-            var buf: [64]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "DEBUG: Index {} called (expected: {s})\n", .{ index, name }) catch "DEBUG: ???\n";
+            const now = std.time.milliTimestamp();
+            const delta = if (global_last_time == 0) 0 else now - global_last_time;
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "DEBUG: [{d}ms] Index {} ({s})\n", .{ delta, index, name }) catch "DEBUG: ???\n";
             stderr.writeAll(msg) catch {};
             actual_fn(ops, ret_ptr, args_ptr);
+            global_last_time = std.time.milliTimestamp();
         }
     };
     return S.wrapper;
@@ -862,13 +960,15 @@ fn debugWrapper(comptime index: usize, comptime name: []const u8, actual_fn: bui
 /// Array of hosted function pointers, sorted by module name alphabetically,
 /// then by function name alphabetically within each module.
 const hosted_function_ptrs = [_]builtins.host_abi.HostedFn{
-    debugWrapper(0, "Stderr.line!", hostedStderrLine),
-    debugWrapper(1, "Stdout.line!", hostedStdoutLine),
-    debugWrapper(2, "WebServer.accept!", hostedWebServerAccept),
-    debugWrapper(3, "WebServer.broadcast!", hostedWebServerBroadcast),
-    debugWrapper(4, "WebServer.close!", hostedWebServerClose),
-    debugWrapper(5, "WebServer.listen!", hostedWebServerListen),
-    debugWrapper(6, "WebServer.send!", hostedWebServerSend),
+    debugWrapper(0, "Json.get_number!", hostedJsonGetNumber),
+    debugWrapper(1, "Json.get_string!", hostedJsonGetString),
+    debugWrapper(2, "Stderr.line!", hostedStderrLine),
+    debugWrapper(3, "Stdout.line!", hostedStdoutLine),
+    debugWrapper(4, "WebServer.accept!", hostedWebServerAccept),
+    debugWrapper(5, "WebServer.broadcast!", hostedWebServerBroadcast),
+    debugWrapper(6, "WebServer.close!", hostedWebServerClose),
+    debugWrapper(7, "WebServer.listen!", hostedWebServerListen),
+    debugWrapper(8, "WebServer.send!", hostedWebServerSend),
 };
 
 /// Platform host entrypoint

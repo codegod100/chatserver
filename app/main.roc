@@ -67,7 +67,7 @@ event_loop! = || {
             Stdout.line!("Client ${client_id.to_str()}: ${text}")
             broadcast_msg = "{\"type\": \"message\", \"clientId\": ${client_id.to_str()}, \"text\": \"${text}\"}"
             match WebServer.broadcast!(broadcast_msg) {
-                Ok({}) => {}
+                Ok({}) => Stdout.line!("Broadcast complete, recursing...")
                 Err(err) => Stdout.line!("Broadcast error: ${err}")
             }
             event_loop!()
@@ -101,22 +101,23 @@ Event : [
 
 parse_event : Str -> Event
 parse_event = |json_str| {
-    # Simple approach: check for substrings
-    if Str.contains(json_str, "\"type\":\"connected\"") or Str.contains(json_str, "\"type\": \"connected\"") {
-        # Extract clientId - find the number after "clientId":
-        client_id = Json.extract_client_id(json_str)
+    # Get type once to avoid multiple contains calls
+    event_type = Json.get_string(json_str, "type")
+    
+    if event_type == "connected" {
+        client_id = Json.get_number(json_str, "clientId")
         Connected(client_id)
-    } else if Str.contains(json_str, "\"type\":\"disconnected\"") or Str.contains(json_str, "\"type\": \"disconnected\"") {
-        client_id = Json.extract_client_id(json_str)
+    } else if event_type == "disconnected" {
+        client_id = Json.get_number(json_str, "clientId")
         Disconnected(client_id)
-    } else if Str.contains(json_str, "\"type\":\"message\"") or Str.contains(json_str, "\"type\": \"message\"") {
-        client_id = Json.extract_client_id(json_str)
+    } else if event_type == "message" {
+        client_id = Json.get_number(json_str, "clientId")
         text = Json.get_string(json_str, "text")
         Message(client_id, text)
-    } else if Str.contains(json_str, "\"type\":\"error\"") or Str.contains(json_str, "\"type\": \"error\"") {
+    } else if event_type == "error" {
         err_msg = Json.get_string(json_str, "message")
         Error(err_msg)
-    } else if Str.contains(json_str, "\"type\":\"shutdown\"") or Str.contains(json_str, "\"type\": \"shutdown\"") {
+    } else if event_type == "shutdown" {
         Shutdown
     } else {
         Unknown
