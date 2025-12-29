@@ -696,7 +696,7 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
     const server = host.server orelse {
         // No server running, return shutdown event
         const json = "{\"type\":\"shutdown\"}";
-        result.* = RocStr.init(json.ptr, json.len, ops);
+        result.* = RocStr.fromSliceSmall(json);
         return;
     };
 
@@ -708,7 +708,11 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
             // Return error as JSON
             var buf: [256]u8 = undefined;
             const json = std.fmt.bufPrint(&buf, "{{\"type\":\"error\",\"message\":\"{}\"}}", .{err}) catch "{\"type\":\"error\",\"message\":\"unknown\"}";
-            result.* = RocStr.init(json.ptr, json.len, ops);
+            if (RocStr.fitsInSmallStr(json.len)) {
+                result.* = RocStr.fromSliceSmall(json);
+            } else {
+                result.* = RocStr.init(json.ptr, json.len, ops);
+            }
             return;
         };
 
@@ -716,14 +720,22 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
             .connected => |client_id| {
                 var buf: [128]u8 = undefined;
                 const json = std.fmt.bufPrint(&buf, "{{\"type\":\"connected\",\"clientId\":{}}}", .{client_id}) catch "{\"type\":\"error\",\"message\":\"format error\"}";
-                result.* = RocStr.init(json.ptr, json.len, ops);
+                if (RocStr.fitsInSmallStr(json.len)) {
+                    result.* = RocStr.fromSliceSmall(json);
+                } else {
+                    result.* = RocStr.init(json.ptr, json.len, ops);
+                }
                 stderr.writeAll("DEBUG accept: returning connected JSON\n") catch {};
                 return;
             },
             .disconnected => |client_id| {
                 var buf: [128]u8 = undefined;
                 const json = std.fmt.bufPrint(&buf, "{{\"type\":\"disconnected\",\"clientId\":{}}}", .{client_id}) catch "{\"type\":\"error\",\"message\":\"format error\"}";
-                result.* = RocStr.init(json.ptr, json.len, ops);
+                if (RocStr.fitsInSmallStr(json.len)) {
+                    result.* = RocStr.fromSliceSmall(json);
+                } else {
+                    result.* = RocStr.init(json.ptr, json.len, ops);
+                }
                 stderr.writeAll("DEBUG accept: returning disconnected JSON\n") catch {};
                 return;
             },
@@ -745,7 +757,11 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
                 }
                 writer.writer().writeAll("\"}") catch {};
                 const json = buf[0..writer.pos];
-                result.* = RocStr.init(json.ptr, json.len, ops);
+                if (RocStr.fitsInSmallStr(json.len)) {
+                    result.* = RocStr.fromSliceSmall(json);
+                } else {
+                    result.* = RocStr.init(json.ptr, json.len, ops);
+                }
                 stderr.writeAll("DEBUG accept: returning message JSON\n") catch {};
                 return;
             },
@@ -762,13 +778,17 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
                 }
                 writer.writer().writeAll("\"}") catch {};
                 const json = buf[0..writer.pos];
-                result.* = RocStr.init(json.ptr, json.len, ops);
+                if (RocStr.fitsInSmallStr(json.len)) {
+                    result.* = RocStr.fromSliceSmall(json);
+                } else {
+                    result.* = RocStr.init(json.ptr, json.len, ops);
+                }
                 stderr.writeAll("DEBUG accept: returning error JSON\n") catch {};
                 return;
             },
             .shutdown => {
                 const json = "{\"type\":\"shutdown\"}";
-                result.* = RocStr.init(json.ptr, json.len, ops);
+                result.* = RocStr.fromSliceSmall(json);
                 stderr.writeAll("DEBUG accept: returning shutdown JSON\n") catch {};
                 return;
             },
@@ -905,6 +925,7 @@ fn hostedStdoutLine(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_pt
 
 /// Json.get_string! : Str, Str => Str
 fn hostedJsonGetString(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    const stderr = std.fs.File.stderr();
     const Args = extern struct {
         json: RocStr,
         key: RocStr,
@@ -915,9 +936,25 @@ fn hostedJsonGetString(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args
     const json = getAsSlice(&args.json);
     const key = getAsSlice(&args.key);
 
+    stderr.writeAll("DEBUG jsonGetString key='") catch {};
+    stderr.writeAll(key) catch {};
+    stderr.writeAll("' json_len=") catch {};
+    var buf: [32]u8 = undefined;
+    const len_str = std.fmt.bufPrint(&buf, "{}", .{json.len}) catch "?";
+    stderr.writeAll(len_str) catch {};
+
     if (jsonGetString(json, key)) |value| {
-        result.* = RocStr.init(value.ptr, value.len, ops);
+        stderr.writeAll(" value='") catch {};
+        stderr.writeAll(value) catch {};
+        stderr.writeAll("'\n") catch {};
+        // Use small string if possible to avoid heap allocation and potential leak
+        if (RocStr.fitsInSmallStr(value.len)) {
+            result.* = RocStr.fromSliceSmall(value);
+        } else {
+            result.* = RocStr.init(value.ptr, value.len, ops);
+        }
     } else {
+        stderr.writeAll(" value=NULL\n") catch {};
         result.* = RocStr.empty();
     }
 }

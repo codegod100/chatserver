@@ -34,18 +34,19 @@ event_loop! = || {
     json_str = WebServer.accept!()
     Stdout.line!("Event JSON: ${json_str}")
 
-    event = parse_event(json_str)
+    event = parse_event!(json_str)
     Stdout.line!("Parsed event, entering match...")
 
     match event {
         Connected(client_id) => {
             Stdout.line!("Connected branch, client_id received")
-            welcome_msg = "{\"type\": \"system\", \"text\": \"Welcome to the chat! You are client #${client_id.to_str()}\"}"
+            id_str = client_id.to_str()
+            welcome_msg = "{\"type\": \"system\", \"text\": \"Welcome to the chat! You are client #${id_str}\"}"
             match WebServer.send!(client_id, welcome_msg) {
                 Ok({}) => {}
                 Err(err) => Stdout.line!("Send error: ${err}")
             }
-            join_msg = "{\"type\": \"system\", \"text\": \"Client #${client_id.to_str()} joined the chat\"}"
+            join_msg = "{\"type\": \"system\", \"text\": \"Client #${id_str} joined the chat\"}"
             match WebServer.broadcast!(join_msg) {
                 Ok({}) => {}
                 Err(err) => Stdout.line!("Broadcast error: ${err}")
@@ -55,7 +56,8 @@ event_loop! = || {
 
         Disconnected(client_id) => {
             Stdout.line!("Client ${client_id.to_str()} disconnected")
-            leave_msg = "{\"type\": \"system\", \"text\": \"Client #${client_id.to_str()} left the chat\"}"
+            id_str = client_id.to_str()
+            leave_msg = "{\"type\": \"system\", \"text\": \"Client #${id_str} left the chat\"}"
             match WebServer.broadcast!(leave_msg) {
                 Ok({}) => {}
                 Err(err) => Stdout.line!("Broadcast error: ${err}")
@@ -65,7 +67,8 @@ event_loop! = || {
 
         Message(client_id, text) => {
             Stdout.line!("Client ${client_id.to_str()}: ${text}")
-            broadcast_msg = "{\"type\": \"message\", \"clientId\": ${client_id.to_str()}, \"text\": \"${text}\"}"
+            id_str = client_id.to_str()
+            broadcast_msg = "{\"type\": \"message\", \"clientId\": ${id_str}, \"text\": \"${text}\"}"
             match WebServer.broadcast!(broadcast_msg) {
                 Ok({}) => Stdout.line!("Broadcast complete, recursing...")
                 Err(err) => Stdout.line!("Broadcast error: ${err}")
@@ -99,23 +102,23 @@ Event : [
     Unknown,
 ]
 
-parse_event : Str -> Event
-parse_event = |json_str| {
+parse_event! : Str => Event
+parse_event! = |json_str| {
     # Get type once to avoid multiple contains calls
-    event_type = Json.get_string(json_str, "type")
+    event_type = Json.get_string!(json_str, "type")
     
     if event_type == "connected" {
-        client_id = Json.get_number(json_str, "clientId")
+        client_id = Json.get_number!(json_str, "clientId")
         Connected(client_id)
     } else if event_type == "disconnected" {
-        client_id = Json.get_number(json_str, "clientId")
+        client_id = Json.get_number!(json_str, "clientId")
         Disconnected(client_id)
     } else if event_type == "message" {
-        client_id = Json.get_number(json_str, "clientId")
-        text = Json.get_string(json_str, "text")
+        client_id = Json.get_number!(json_str, "clientId")
+        text = Json.get_string!(json_str, "text")
         Message(client_id, text)
     } else if event_type == "error" {
-        err_msg = Json.get_string(json_str, "message")
+        err_msg = Json.get_string!(json_str, "message")
         Error(err_msg)
     } else if event_type == "shutdown" {
         Shutdown

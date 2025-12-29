@@ -175,7 +175,13 @@
             };
 
             socket.onmessage = function(event) {
-                console.log('Received:', event.data);
+                console.log('Received raw:', event.data);
+                try {
+                    var parsed = JSON.parse(event.data);
+                    console.log('Parsed JSON:', parsed);
+                } catch (e) {
+                    console.log('JSON parse error:', e);
+                }
                 app.ports.messageReceiver.send(event.data);
             };
 

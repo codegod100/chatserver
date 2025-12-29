@@ -1,4 +1,4 @@
 Json :: [].{
-    get_string : Str, Str -> Str
-    get_number : Str, Str -> U64
+    get_string! : Str, Str => Str
+    get_number! : Str, Str => U64
 }
