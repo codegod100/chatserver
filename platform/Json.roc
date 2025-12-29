@@ -1,16 +1,52 @@
-module [
-    get_string,
-    get_number,
-    extract_client_id,
-]
+Json := [].{
+    ## Extract client ID by finding digits after "clientId":
+    extract_client_id : Str -> U64
+    extract_client_id = |json_str| {
+        # Look for clientId": and extract number
+        bytes = json_str.to_utf8()
+        extract_client_id_helper(bytes, False, 0)
+    }
 
-## Extract client ID by finding digits after "clientId":
-extract_client_id : Str -> U64
-extract_client_id = |json_str| {
-    # Look for clientId": and extract number
-    bytes = json_str.to_utf8()
-    extract_client_id_helper(bytes, False, 0)
+    ## Get a string value from JSON by key
+    get_string : Str, Str -> Str
+    get_string = |json_str, key| {
+        # Convert to bytes and search manually
+        bytes = json_str.to_utf8()
+        key_bytes = "\"${key}\":".to_utf8()
+        # Find the key and extract string value, return "" if not found
+        find_and_extract_string(bytes, key_bytes, "")
+    }
+
+    ## Get a number value from JSON by key
+    get_number : Str, Str -> U64
+    get_number = |json_str, key| {
+        # Look for "key": value pattern
+        search_pattern = "\"${key}\":"
+        bytes = json_str.to_utf8()
+        pattern_bytes = search_pattern.to_utf8()
+        
+        # Find the pattern
+        match find_pattern(bytes, pattern_bytes, 0) {
+            Ok(pos) => {
+                # Skip to value start
+                after_key = bytes.drop_first(pos + pattern_bytes.len())
+                trimmed = skip_whitespace(after_key)
+                
+                # Extract number
+                num_bytes = extract_number(trimmed)
+                match num_bytes.to_str() {
+                    Ok(num_str) => {
+                        parse_u64(num_str)
+                    }
+                    Err(_) => 0
+                }
+            }
+            Err(_) => 0
+        }
+    }
 }
+
+# Private helper functions (called with -> arrow syntax)
 
 extract_client_id_helper : List(U8), Bool, U64 -> U64
 extract_client_id_helper = |bytes, found_colon, acc| match bytes {
@@ -45,16 +81,6 @@ extract_client_id_helper = |bytes, found_colon, acc| match bytes {
         }
     }
     [] => acc
-}
-
-## Get a string value from JSON by key
-get_string : Str, Str -> Str
-get_string = |json_str, key| {
-    # Convert to bytes and search manually
-    bytes = json_str.to_utf8()
-    key_bytes = "\"${key}\":".to_utf8()
-    # Find the key and extract string value, return "" if not found
-    find_and_extract_string(bytes, key_bytes, "")
 }
 
 # Recursively search for key pattern and extract string value
@@ -107,34 +133,6 @@ check_prefix_helper = |bytes, pattern| {
                 }
             }
         }
-    }
-}
-
-## Get a number value from JSON by key
-get_number : Str, Str -> U64
-get_number = |json_str, key| {
-    # Look for "key": value pattern
-    search_pattern = "\"${key}\":"
-    bytes = json_str.to_utf8()
-    pattern_bytes = search_pattern.to_utf8()
-    
-    # Find the pattern
-    match find_pattern(bytes, pattern_bytes, 0) {
-        Ok(pos) => {
-            # Skip to value start
-            after_key = bytes.drop_first(pos + pattern_bytes.len())
-            trimmed = skip_whitespace(after_key)
-            
-            # Extract number
-            num_bytes = extract_number(trimmed)
-            match num_bytes.to_str() {
-                Ok(num_str) => {
-                    parse_u64(num_str)
-                }
-                Err(_) => 0
-            }
-        }
-        Err(_) => 0
     }
 }
 

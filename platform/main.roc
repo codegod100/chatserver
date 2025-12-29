@@ -1,6 +1,6 @@
 platform ""
     requires {} { main! : {} => Try({}, [Exit(I32)]) }
-    exposes [Stdout, Stderr, WebServer]
+    exposes [Stdout, Stderr, WebServer, Json]
     packages {}
     provides { main_for_host!: "main_for_host" }
     targets: {

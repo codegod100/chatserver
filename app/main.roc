@@ -5,7 +5,7 @@ app [main!] {
 import pf.Stdout
 import pf.Stderr
 import pf.WebServer
-import Json
+import pf.Json
 
 ## Chat server that handles WebSocket connections
 ## and broadcasts messages to all connected clients
