@@ -5,7 +5,6 @@ app [main!] {
 import pf.Stdout
 import pf.Stderr
 import pf.WebServer
-import pf.Json
 
 ## Chat server that handles WebSocket connections
 ## and broadcasts messages to all connected clients
@@ -26,105 +25,61 @@ main! = |{}| {
 
     Stdout.line!("Waiting for connections...")
 
-    event_loop!()
+    event_loop!({})
 }
 
-event_loop! : () => Try({}, [Exit(I32)])
-event_loop! = || {
-    json_str = WebServer.accept!()
-    Stdout.line!("Event JSON: ${json_str}")
-
-    event = parse_event!(json_str)
-    Stdout.line!("Parsed event, entering match...")
-
+event_loop! : {} => Try({}, [Exit(I32)])
+event_loop! = |{}| {
+    event = WebServer.accept!()
+    
     match event {
         Connected(client_id) => {
-            Stdout.line!("Connected branch, client_id received")
-            id_str = client_id.to_str()
-            welcome_msg = "{\"type\": \"system\", \"text\": \"Welcome to the chat! You are client #${id_str}\"}"
-            match WebServer.send!(client_id, welcome_msg) {
-                Ok({}) => {}
-                Err(err) => Stdout.line!("Send error: ${err}")
-            }
-            join_msg = "{\"type\": \"system\", \"text\": \"Client #${id_str} joined the chat\"}"
-            match WebServer.broadcast!(join_msg) {
-                Ok({}) => {}
-                Err(err) => Stdout.line!("Broadcast error: ${err}")
-            }
-            event_loop!()
+            Stdout.line!("Client ${client_id.to_str()} connected")
+            
+            # Send welcome message
+            welcome = "{\"type\": \"system\", \"text\": \"Welcome to the chat! You are client #${client_id.to_str()}\"}"
+            send_result = WebServer.send!(client_id, welcome)
+            match send_result { Ok({}) => {} Err(_e) => {} }
+            
+            # Broadcast join message
+            join_msg = "{\"type\": \"system\", \"text\": \"Client #${client_id.to_str()} joined the chat\"}"
+            broadcast_result = WebServer.broadcast!(join_msg)
+            match broadcast_result { Ok({}) => {} Err(_e) => {} }
+            
+            event_loop!({})
         }
-
+        
         Disconnected(client_id) => {
             Stdout.line!("Client ${client_id.to_str()} disconnected")
-            id_str = client_id.to_str()
-            leave_msg = "{\"type\": \"system\", \"text\": \"Client #${id_str} left the chat\"}"
-            match WebServer.broadcast!(leave_msg) {
-                Ok({}) => {}
-                Err(err) => Stdout.line!("Broadcast error: ${err}")
-            }
-            event_loop!()
+            
+            # Broadcast leave message
+            leave_msg = "{\"type\": \"system\", \"text\": \"Client #${client_id.to_str()} left the chat\"}"
+            broadcast_result = WebServer.broadcast!(leave_msg)
+            match broadcast_result { Ok({}) => {} Err(_e) => {} }
+            
+            event_loop!({})
         }
-
+        
         Message(client_id, text) => {
             Stdout.line!("Client ${client_id.to_str()}: ${text}")
-            id_str = client_id.to_str()
-            broadcast_msg = "{\"type\": \"message\", \"clientId\": ${id_str}, \"text\": \"${text}\"}"
-            match WebServer.broadcast!(broadcast_msg) {
-                Ok({}) => Stdout.line!("Broadcast complete, recursing...")
-                Err(err) => Stdout.line!("Broadcast error: ${err}")
-            }
-            event_loop!()
+            
+            # Broadcast the message to all clients (text passed as-is, frontend handles display)
+            broadcast_msg = "{\"type\": \"message\", \"clientId\": ${client_id.to_str()}, \"text\": \"${text}\"}"
+            broadcast_result = WebServer.broadcast!(broadcast_msg)
+            match broadcast_result { Ok({}) => {} Err(_e) => {} }
+            
+            event_loop!({})
         }
-
-        Error(message) => {
-            Stdout.line!("Error: ${message}")
-            event_loop!()
+        
+        Error(msg) => {
+            Stderr.line!("Error: ${msg}")
+            event_loop!({})
         }
-
+        
         Shutdown => {
             Stdout.line!("Server shutting down")
             Ok({})
         }
-
-        Unknown => {
-            Stdout.line!("Unknown event received: ${json_str}")
-            event_loop!()
-        }
     }
 }
-
-Event : [
-    Connected(U64),
-    Disconnected(U64),
-    Message(U64, Str),
-    Error(Str),
-    Shutdown,
-    Unknown,
-]
-
-parse_event! : Str => Event
-parse_event! = |json_str| {
-    # Get type once to avoid multiple contains calls
-    event_type = Json.get_string!(json_str, "type")
-    
-    if event_type == "connected" {
-        client_id = Json.get_number!(json_str, "clientId")
-        Connected(client_id)
-    } else if event_type == "disconnected" {
-        client_id = Json.get_number!(json_str, "clientId")
-        Disconnected(client_id)
-    } else if event_type == "message" {
-        client_id = Json.get_number!(json_str, "clientId")
-        text = Json.get_string!(json_str, "text")
-        Message(client_id, text)
-    } else if event_type == "error" {
-        err_msg = Json.get_string!(json_str, "message")
-        Error(err_msg)
-    } else if event_type == "shutdown" {
-        Shutdown
-    } else {
-        Unknown
-    }
-}
-
 

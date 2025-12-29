@@ -31,6 +31,11 @@ const HostEnv = struct {
 // Use C allocator for Roc allocations
 const c_allocator = std.heap.c_allocator;
 
+// Allocation tracking
+var alloc_count: usize = 0;
+var dealloc_count: usize = 0;
+var total_allocated: usize = 0;
+
 /// Roc allocation function using C allocator
 fn rocAllocFn(roc_alloc: *builtins.host_abi.RocAlloc, env: *anyopaque) callconv(.c) void {
     _ = env;
@@ -46,11 +51,22 @@ fn rocAllocFn(roc_alloc: *builtins.host_abi.RocAlloc, env: *anyopaque) callconv(
         stderr.writeAll("\x1b[31mHost error:\x1b[0m allocation failed, out of memory\n") catch {};
         std.process.exit(1);
     };
+
+    // Track allocation
+    alloc_count += 1;
+    total_allocated += roc_alloc.length;
+    if (alloc_count % 100 == 0) {
+        const stderr = std.fs.File.stderr();
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "ALLOC STATS: allocs={} deallocs={} diff={} total_bytes={}\n", .{ alloc_count, dealloc_count, alloc_count - dealloc_count, total_allocated }) catch "ALLOC STATS: ???\n";
+        stderr.writeAll(msg) catch {};
+    }
 }
 
 /// Roc deallocation function using C allocator
 fn rocDeallocFn(roc_dealloc: *builtins.host_abi.RocDealloc, env: *anyopaque) callconv(.c) void {
     _ = env;
+    dealloc_count += 1;
     const slice = @as([*]u8, @ptrCast(roc_dealloc.ptr))[0..0];
     c_allocator.rawFree(
         slice,
@@ -251,8 +267,6 @@ const WebSocketServer = struct {
                 }
             }
 
-            const dbg = std.fs.File.stderr();
-
             // Poll with longer timeout (5 seconds) to avoid busy spinning
             const ready = std.posix.poll(poll_fds.items, 5000) catch |err| {
                 const msg = std.fmt.allocPrint(self.allocator, "Poll error: {}", .{err}) catch "Poll error";
@@ -260,16 +274,12 @@ const WebSocketServer = struct {
             };
 
             if (ready == 0) {
-                // Timeout - just continue polling, don't return an error
-                dbg.writeAll(".") catch {};
+                // Timeout - just continue polling
                 continue;
             }
 
-            dbg.writeAll("\n=== Poll ready ===\n") catch {};
-
             // Check listener for new connections
             if (poll_fds.items[0].revents & std.posix.POLL.IN != 0) {
-                dbg.writeAll("=== Connection incoming ===\n") catch {};
                 const connection = listener.accept() catch |err| {
                     const msg = std.fmt.allocPrint(self.allocator, "Accept error: {}", .{err}) catch "Accept error";
                     return .{ .err = msg };
@@ -562,64 +572,6 @@ const WebSocketServer = struct {
 var global_server: ?*WebSocketServer = null;
 
 // ============================================================================
-// JSON Parsing Helpers
-// ============================================================================
-
-fn jsonGetString(json: []const u8, key: []const u8) ?[]const u8 {
-    // Build the key pattern: "key":
-    var pattern_buf: [256]u8 = undefined;
-    const pattern = std.fmt.bufPrint(&pattern_buf, "\"{s}\":", .{key}) catch return null;
-
-    // Find the key
-    const key_pos = std.mem.indexOf(u8, json, pattern) orelse return null;
-    var pos = key_pos + pattern.len;
-
-    // Skip whitespace
-    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t' or json[pos] == '\n' or json[pos] == '\r')) {
-        pos += 1;
-    }
-
-    if (pos >= json.len or json[pos] != '"') return null;
-    pos += 1; // Skip opening quote
-
-    const start = pos;
-    // Find closing quote (handle escapes)
-    while (pos < json.len) {
-        if (json[pos] == '\\' and pos + 1 < json.len) {
-            pos += 2; // Skip escape sequence
-        } else if (json[pos] == '"') {
-            return json[start..pos];
-        } else {
-            pos += 1;
-        }
-    }
-    return null;
-}
-
-fn jsonGetNumber(json: []const u8, key: []const u8) u64 {
-    // Build the key pattern: "key":
-    var pattern_buf: [256]u8 = undefined;
-    const pattern = std.fmt.bufPrint(&pattern_buf, "\"{s}\":", .{key}) catch return 0;
-
-    // Find the key
-    const key_pos = std.mem.indexOf(u8, json, pattern) orelse return 0;
-    var pos = key_pos + pattern.len;
-
-    // Skip whitespace
-    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t' or json[pos] == '\n' or json[pos] == '\r')) {
-        pos += 1;
-    }
-
-    // Parse number
-    var result: u64 = 0;
-    while (pos < json.len and json[pos] >= '0' and json[pos] <= '9') {
-        result = result * 10 + (json[pos] - '0');
-        pos += 1;
-    }
-    return result;
-}
-
-// ============================================================================
 // Hosted Functions
 // ============================================================================
 
@@ -630,9 +582,6 @@ fn getAsSlice(roc_str: *const RocStr) []const u8 {
 
 /// WebServer.listen! : U16 => Result({}, Str)
 fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
-    const stderr = std.fs.File.stderr();
-    stderr.writeAll("DEBUG hostedWebServerListen called\n") catch {};
-
     const Result = extern struct {
         payload: RocStr,
         discriminant: u8,
@@ -646,26 +595,28 @@ fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
 
     if (host.server) |_| {
         const msg = "Server already running";
-        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0; // Err
-        stderr.writeAll("DEBUG listen: returning Err (already running)\n") catch {};
         return;
     }
 
     const server = host.gpa.allocator().create(WebSocketServer) catch {
         const msg = "Failed to allocate server";
-        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0;
-        stderr.writeAll("DEBUG listen: returning Err (alloc failed)\n") catch {};
         return;
     };
     server.* = WebSocketServer.init(host.gpa.allocator());
 
     server.listen(args.port) catch |err| {
-        const msg = std.fmt.allocPrint(host.gpa.allocator(), "Failed to listen: {}", .{err}) catch "Listen failed";
-        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Failed to listen: {}", .{err}) catch "Listen failed";
+        if (RocStr.fitsInSmallStr(msg.len)) {
+            result.payload = RocStr.fromSliceSmall(msg);
+        } else {
+            result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        }
         result.discriminant = 0;
-        stderr.writeAll("DEBUG listen: returning Err (listen failed)\n") catch {};
         return;
     };
 
@@ -674,77 +625,75 @@ fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
 
     result.payload = RocStr.empty();
     result.discriminant = 1; // Ok
-    stderr.writeAll("DEBUG listen: returning Ok\n") catch {};
 }
 
-/// WebServer.accept! : () => Event
-/// WebServer.accept! : () => Str
-/// Returns a JSON string describing the event:
-///   {"type":"connected","clientId":123}
-///   {"type":"disconnected","clientId":123}
-///   {"type":"message","clientId":123,"text":"hello"}
-///   {"type":"error","message":"error text"}
-///   {"type":"shutdown"}
-fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+/// WebServer.run! : () => Result({}, Str)
+/// Runs the event loop entirely in Zig - no Roc recursion needed
+fn hostedWebServerRun(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
     const stderr = std.fs.File.stderr();
-    stderr.writeAll("DEBUG hostedWebServerAccept called\n") catch {};
+    const stdout = std.fs.File.stdout();
     _ = args_ptr;
 
-    const result: *RocStr = @ptrCast(@alignCast(ret_ptr));
+    const Result = extern struct {
+        payload: RocStr,
+        discriminant: u8,
+    };
+
+    const result: *Result = @ptrCast(@alignCast(ret_ptr));
     const host: *HostEnv = @ptrCast(@alignCast(ops.env));
 
     const server = host.server orelse {
-        // No server running, return shutdown event
-        const json = "{\"type\":\"shutdown\"}";
-        result.* = RocStr.fromSliceSmall(json);
+        const msg = "Server not running";
+        result.payload = RocStr.fromSliceSmall(msg);
+        result.discriminant = 0; // Err
         return;
     };
 
+    // Event loop runs entirely in Zig
     while (true) {
         const event = server.accept() catch |err| {
             if (err == error.ControlFrame or err == error.NotWebSocket) {
                 continue;
             }
-            // Return error as JSON
-            var buf: [256]u8 = undefined;
-            const json = std.fmt.bufPrint(&buf, "{{\"type\":\"error\",\"message\":\"{}\"}}", .{err}) catch "{\"type\":\"error\",\"message\":\"unknown\"}";
-            if (RocStr.fitsInSmallStr(json.len)) {
-                result.* = RocStr.fromSliceSmall(json);
-            } else {
-                result.* = RocStr.init(json.ptr, json.len, ops);
-            }
-            return;
+            stderr.writeAll("Accept error, continuing...\n") catch {};
+            continue;
         };
 
         switch (event) {
             .connected => |client_id| {
                 var buf: [128]u8 = undefined;
-                const json = std.fmt.bufPrint(&buf, "{{\"type\":\"connected\",\"clientId\":{}}}", .{client_id}) catch "{\"type\":\"error\",\"message\":\"format error\"}";
-                if (RocStr.fitsInSmallStr(json.len)) {
-                    result.* = RocStr.fromSliceSmall(json);
-                } else {
-                    result.* = RocStr.init(json.ptr, json.len, ops);
-                }
-                stderr.writeAll("DEBUG accept: returning connected JSON\n") catch {};
-                return;
+                const log_msg = std.fmt.bufPrint(&buf, "Client {} connected\n", .{client_id}) catch "Client connected\n";
+                stdout.writeAll(log_msg) catch {};
+
+                // Send welcome message
+                var welcome_buf: [256]u8 = undefined;
+                const welcome = std.fmt.bufPrint(&welcome_buf, "{{\"type\": \"system\", \"text\": \"Welcome to the chat! You are client #{}\"}}", .{client_id}) catch continue;
+                server.send(client_id, welcome) catch {};
+
+                // Broadcast join message
+                var join_buf: [256]u8 = undefined;
+                const join = std.fmt.bufPrint(&join_buf, "{{\"type\": \"system\", \"text\": \"Client #{} joined the chat\"}}", .{client_id}) catch continue;
+                server.broadcast(join) catch {};
             },
             .disconnected => |client_id| {
                 var buf: [128]u8 = undefined;
-                const json = std.fmt.bufPrint(&buf, "{{\"type\":\"disconnected\",\"clientId\":{}}}", .{client_id}) catch "{\"type\":\"error\",\"message\":\"format error\"}";
-                if (RocStr.fitsInSmallStr(json.len)) {
-                    result.* = RocStr.fromSliceSmall(json);
-                } else {
-                    result.* = RocStr.init(json.ptr, json.len, ops);
-                }
-                stderr.writeAll("DEBUG accept: returning disconnected JSON\n") catch {};
-                return;
+                const log_msg = std.fmt.bufPrint(&buf, "Client {} disconnected\n", .{client_id}) catch "Client disconnected\n";
+                stdout.writeAll(log_msg) catch {};
+
+                // Broadcast leave message
+                var leave_buf: [256]u8 = undefined;
+                const leave = std.fmt.bufPrint(&leave_buf, "{{\"type\": \"system\", \"text\": \"Client #{} left the chat\"}}", .{client_id}) catch continue;
+                server.broadcast(leave) catch {};
             },
             .message => |msg| {
-                // For message, we need to escape the text for JSON
                 var buf: [4096]u8 = undefined;
-                var writer = std.io.fixedBufferStream(&buf);
-                writer.writer().print("{{\"type\":\"message\",\"clientId\":{},\"text\":\"", .{msg.client_id}) catch {};
-                // Escape the message text
+                const log_msg = std.fmt.bufPrint(&buf, "Client {}: {s}\n", .{ msg.client_id, msg.text }) catch "Client message\n";
+                stdout.writeAll(log_msg) catch {};
+
+                // Broadcast message - need to escape text for JSON
+                var json_buf: [4096]u8 = undefined;
+                var writer = std.io.fixedBufferStream(&json_buf);
+                writer.writer().print("{{\"type\": \"message\", \"clientId\": {}, \"text\": \"", .{msg.client_id}) catch continue;
                 for (msg.text) |c| {
                     switch (c) {
                         '"' => writer.writer().writeAll("\\\"") catch {},
@@ -755,41 +704,105 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
                         else => writer.writer().writeByte(c) catch {},
                     }
                 }
-                writer.writer().writeAll("\"}") catch {};
-                const json = buf[0..writer.pos];
-                if (RocStr.fitsInSmallStr(json.len)) {
-                    result.* = RocStr.fromSliceSmall(json);
+                writer.writer().writeAll("\"}") catch continue;
+                server.broadcast(json_buf[0..writer.pos]) catch {};
+            },
+            .err => |msg| {
+                stderr.writeAll("Error: ") catch {};
+                stderr.writeAll(msg) catch {};
+                stderr.writeAll("\n") catch {};
+            },
+            .shutdown => {
+                stdout.writeAll("Server shutting down\n") catch {};
+                result.payload = RocStr.empty();
+                result.discriminant = 1; // Ok
+                return;
+            },
+        }
+    }
+}
+
+/// WebServer.accept! : () => Event
+/// Event is [Connected(U64), Disconnected(U64), Message(U64, Str), Error(Str), Shutdown]
+fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    _ = args_ptr;
+
+    // Roc tag union layout: payload first (sized to largest), discriminant at end
+    // Alphabetical order: Connected=0, Disconnected=1, Error=2, Message=3, Shutdown=4
+    // Largest payload = Message(U64, Str) = 8 + 24 = 32 bytes
+    // discriminant_offset = 32, total size = 40 bytes (padded to 8-byte alignment)
+    const EventPayload = extern union {
+        // Connected/Disconnected: U64 at offset 0
+        client_id: u64,
+        // Error: Str at offset 0
+        err_str: RocStr,
+        // Message: U64 at offset 0, Str at offset 8
+        message: extern struct {
+            client_id: u64,
+            text: RocStr,
+        },
+        // Shutdown: no payload
+    };
+
+    const Event = extern struct {
+        payload: EventPayload,
+        discriminant: u8,
+    };
+
+    const result: *Event = @ptrCast(@alignCast(ret_ptr));
+    const host: *HostEnv = @ptrCast(@alignCast(ops.env));
+
+    const server = host.server orelse {
+        result.discriminant = 4; // Shutdown
+        return;
+    };
+
+    // Loop until we get a real event (skip ControlFrame and NotWebSocket errors)
+    while (true) {
+        const event = server.accept() catch |err| {
+            if (err == error.ControlFrame or err == error.NotWebSocket) {
+                // Skip these non-events and continue polling
+                continue;
+            }
+            const msg = "Accept error";
+            result.payload.err_str = RocStr.fromSliceSmall(msg);
+            result.discriminant = 2; // Error
+            return;
+        };
+
+        switch (event) {
+            .connected => |client_id| {
+                result.payload.client_id = client_id;
+                result.discriminant = 0; // Connected
+                return;
+            },
+            .disconnected => |client_id| {
+                result.payload.client_id = client_id;
+                result.discriminant = 1; // Disconnected
+                return;
+            },
+            .message => |msg| {
+                result.payload.message.client_id = msg.client_id;
+                // Create RocStr from message text
+                if (RocStr.fitsInSmallStr(msg.text.len)) {
+                    result.payload.message.text = RocStr.fromSliceSmall(msg.text);
                 } else {
-                    result.* = RocStr.init(json.ptr, json.len, ops);
+                    result.payload.message.text = RocStr.init(msg.text.ptr, msg.text.len, ops);
                 }
-                stderr.writeAll("DEBUG accept: returning message JSON\n") catch {};
+                result.discriminant = 3; // Message
                 return;
             },
             .err => |msg| {
-                var buf: [512]u8 = undefined;
-                var writer = std.io.fixedBufferStream(&buf);
-                writer.writer().writeAll("{\"type\":\"error\",\"message\":\"") catch {};
-                for (msg) |c| {
-                    switch (c) {
-                        '"' => writer.writer().writeAll("\\\"") catch {},
-                        '\\' => writer.writer().writeAll("\\\\") catch {},
-                        else => writer.writer().writeByte(c) catch {},
-                    }
-                }
-                writer.writer().writeAll("\"}") catch {};
-                const json = buf[0..writer.pos];
-                if (RocStr.fitsInSmallStr(json.len)) {
-                    result.* = RocStr.fromSliceSmall(json);
+                if (RocStr.fitsInSmallStr(msg.len)) {
+                    result.payload.err_str = RocStr.fromSliceSmall(msg);
                 } else {
-                    result.* = RocStr.init(json.ptr, json.len, ops);
+                    result.payload.err_str = RocStr.init(msg.ptr, msg.len, ops);
                 }
-                stderr.writeAll("DEBUG accept: returning error JSON\n") catch {};
+                result.discriminant = 2; // Error
                 return;
             },
             .shutdown => {
-                const json = "{\"type\":\"shutdown\"}";
-                result.* = RocStr.fromSliceSmall(json);
-                stderr.writeAll("DEBUG accept: returning shutdown JSON\n") catch {};
+                result.discriminant = 4; // Shutdown
                 return;
             },
         }
@@ -798,9 +811,6 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
 
 /// WebServer.send! : U64, Str => Result({}, Str)
 fn hostedWebServerSend(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
-    const stderr = std.fs.File.stderr();
-    stderr.writeAll("DEBUG hostedWebServerSend called\n") catch {};
-
     const Result = extern struct {
         payload: RocStr,
         discriminant: u8,
@@ -817,15 +827,20 @@ fn hostedWebServerSend(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args
 
     const server = host.server orelse {
         const msg = "Server not running";
-        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0;
         return;
     };
 
     const message = getAsSlice(&args.message);
     server.send(args.client_id, message) catch |err| {
-        const msg = std.fmt.allocPrint(server.allocator, "Send failed: {}", .{err}) catch "Send failed";
-        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Send failed: {}", .{err}) catch "Send failed";
+        if (RocStr.fitsInSmallStr(msg.len)) {
+            result.payload = RocStr.fromSliceSmall(msg);
+        } else {
+            result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        }
         result.discriminant = 0;
         return;
     };
@@ -836,9 +851,6 @@ fn hostedWebServerSend(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args
 
 /// WebServer.broadcast! : Str => Result({}, Str)
 fn hostedWebServerBroadcast(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
-    const stderr = std.fs.File.stderr();
-    stderr.writeAll("DEBUG hostedWebServerBroadcast called\n") catch {};
-
     const Result = extern struct {
         payload: RocStr,
         discriminant: u8,
@@ -854,15 +866,20 @@ fn hostedWebServerBroadcast(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque,
 
     const server = host.server orelse {
         const msg = "Server not running";
-        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0;
         return;
     };
 
     const message = getAsSlice(&args.message);
     server.broadcast(message) catch |err| {
-        const msg = std.fmt.allocPrint(server.allocator, "Broadcast failed: {}", .{err}) catch "Broadcast failed";
-        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Broadcast failed: {}", .{err}) catch "Broadcast failed";
+        if (RocStr.fitsInSmallStr(msg.len)) {
+            result.payload = RocStr.fromSliceSmall(msg);
+        } else {
+            result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        }
         result.discriminant = 0;
         return;
     };
@@ -889,8 +906,6 @@ fn hostedWebServerClose(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, arg
 
 /// Stderr.line! : Str => {}
 fn hostedStderrLine(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
-    const dbg = std.fs.File.stderr();
-    dbg.writeAll("DEBUG hostedStderrLine called\n") catch {};
     _ = ops;
     _ = ret_ptr;
 
@@ -907,8 +922,6 @@ fn hostedStderrLine(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_pt
 
 /// Stdout.line! : Str => {}
 fn hostedStdoutLine(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
-    const dbg = std.fs.File.stderr();
-    dbg.writeAll("DEBUG hostedStdoutLine called\n") catch {};
     _ = ops;
     _ = ret_ptr;
 
@@ -923,89 +936,17 @@ fn hostedStdoutLine(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_pt
     stdout.writeAll("\n") catch {};
 }
 
-/// Json.get_string! : Str, Str => Str
-fn hostedJsonGetString(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
-    const stderr = std.fs.File.stderr();
-    const Args = extern struct {
-        json: RocStr,
-        key: RocStr,
-    };
-    const args: *Args = @ptrCast(@alignCast(args_ptr));
-    const result: *RocStr = @ptrCast(@alignCast(ret_ptr));
-
-    const json = getAsSlice(&args.json);
-    const key = getAsSlice(&args.key);
-
-    stderr.writeAll("DEBUG jsonGetString key='") catch {};
-    stderr.writeAll(key) catch {};
-    stderr.writeAll("' json_len=") catch {};
-    var buf: [32]u8 = undefined;
-    const len_str = std.fmt.bufPrint(&buf, "{}", .{json.len}) catch "?";
-    stderr.writeAll(len_str) catch {};
-
-    if (jsonGetString(json, key)) |value| {
-        stderr.writeAll(" value='") catch {};
-        stderr.writeAll(value) catch {};
-        stderr.writeAll("'\n") catch {};
-        // Use small string if possible to avoid heap allocation and potential leak
-        if (RocStr.fitsInSmallStr(value.len)) {
-            result.* = RocStr.fromSliceSmall(value);
-        } else {
-            result.* = RocStr.init(value.ptr, value.len, ops);
-        }
-    } else {
-        stderr.writeAll(" value=NULL\n") catch {};
-        result.* = RocStr.empty();
-    }
-}
-
-/// Json.get_number! : Str, Str => U64
-fn hostedJsonGetNumber(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
-    _ = ops;
-    const Args = extern struct {
-        json: RocStr,
-        key: RocStr,
-    };
-    const args: *Args = @ptrCast(@alignCast(args_ptr));
-    const result: *u64 = @ptrCast(@alignCast(ret_ptr));
-
-    const json = getAsSlice(&args.json);
-    const key = getAsSlice(&args.key);
-
-    result.* = jsonGetNumber(json, key);
-}
-
-/// Debug wrapper to log which index is being called
-var global_last_time: i64 = 0;
-
-fn debugWrapper(comptime index: usize, comptime name: []const u8, actual_fn: builtins.host_abi.HostedFn) builtins.host_abi.HostedFn {
-    const S = struct {
-        fn wrapper(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
-            const stderr = std.fs.File.stderr();
-            const now = std.time.milliTimestamp();
-            const delta = if (global_last_time == 0) 0 else now - global_last_time;
-            var buf: [128]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "DEBUG: [{d}ms] Index {} ({s})\n", .{ delta, index, name }) catch "DEBUG: ???\n";
-            stderr.writeAll(msg) catch {};
-            actual_fn(ops, ret_ptr, args_ptr);
-            global_last_time = std.time.milliTimestamp();
-        }
-    };
-    return S.wrapper;
-}
-
 /// Array of hosted function pointers, sorted by module name alphabetically,
 /// then by function name alphabetically within each module.
 const hosted_function_ptrs = [_]builtins.host_abi.HostedFn{
-    debugWrapper(0, "Json.get_number!", hostedJsonGetNumber),
-    debugWrapper(1, "Json.get_string!", hostedJsonGetString),
-    debugWrapper(2, "Stderr.line!", hostedStderrLine),
-    debugWrapper(3, "Stdout.line!", hostedStdoutLine),
-    debugWrapper(4, "WebServer.accept!", hostedWebServerAccept),
-    debugWrapper(5, "WebServer.broadcast!", hostedWebServerBroadcast),
-    debugWrapper(6, "WebServer.close!", hostedWebServerClose),
-    debugWrapper(7, "WebServer.listen!", hostedWebServerListen),
-    debugWrapper(8, "WebServer.send!", hostedWebServerSend),
+    hostedStderrLine,
+    hostedStdoutLine,
+    hostedWebServerAccept,
+    hostedWebServerBroadcast,
+    hostedWebServerClose,
+    hostedWebServerListen,
+    hostedWebServerRun,
+    hostedWebServerSend,
 };
 
 /// Platform host entrypoint
