@@ -5,146 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Roc Chat Server</title>
     <style>
-        * {
-            box-sizing: border-box;
+        html, body {
             margin: 0;
             padding: 0;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-
-        #app {
-            width: 100%;
-            max-width: 600px;
-        }
-
-        .chat-container {
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            height: 100%;
             overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
         }
-
-        .chat-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            text-align: center;
-        }
-
-        .chat-header h1 {
-            font-size: 1.5rem;
-            margin-bottom: 5px;
-        }
-
-        .chat-header .status {
-            font-size: 0.875rem;
-            opacity: 0.9;
-        }
-
-        .chat-header .status.connected {
-            color: #90EE90;
-        }
-
-        .chat-header .status.disconnected {
-            color: #FFB6C1;
-        }
-
-        .messages {
-            height: 400px;
-            overflow-y: auto;
-            padding: 20px;
-            background: #f8f9fa;
-        }
-
-        .message {
-            margin-bottom: 12px;
-            padding: 10px 14px;
-            border-radius: 12px;
-            max-width: 80%;
-            word-wrap: break-word;
-        }
-
-        .message.system {
-            background: #e9ecef;
-            color: #6c757d;
-            font-style: italic;
-            text-align: center;
-            max-width: 100%;
-            font-size: 0.875rem;
-        }
-
-        .message.own {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            margin-left: auto;
-        }
-
-        .message.other {
-            background: white;
-            border: 1px solid #dee2e6;
-        }
-
-        .message .sender {
-            font-size: 0.75rem;
-            opacity: 0.7;
-            margin-bottom: 4px;
-        }
-
-        .input-area {
-            display: flex;
-            padding: 20px;
-            background: white;
-            border-top: 1px solid #dee2e6;
-        }
-
-        .input-area input {
-            flex: 1;
-            padding: 12px 16px;
-            border: 2px solid #dee2e6;
-            border-radius: 25px;
-            font-size: 1rem;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-
-        .input-area input:focus {
-            border-color: #667eea;
-        }
-
-        .input-area button {
-            margin-left: 10px;
-            padding: 12px 24px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 25px;
-            font-size: 1rem;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-
-        .input-area button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
-
-        .input-area button:active {
-            transform: translateY(0);
-        }
-
-        .input-area button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
+        #app {
+            height: 100%;
+            overflow: hidden;
         }
     </style>
 </head>
@@ -175,13 +45,6 @@
             };
 
             socket.onmessage = function(event) {
-                console.log('Received raw:', event.data);
-                try {
-                    var parsed = JSON.parse(event.data);
-                    console.log('Parsed JSON:', parsed);
-                } catch (e) {
-                    console.log('JSON parse error:', e);
-                }
                 app.ports.messageReceiver.send(event.data);
             };
 
@@ -207,6 +70,18 @@
             if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(message);
             }
+        });
+
+        // Subscribe to scroll requests from Elm
+        app.ports.scrollToBottom.subscribe(function() {
+            requestAnimationFrame(function() {
+                var messages = document.getElementById('messages');
+                if (messages) {
+                    // elm-ui creates nested scrollable divs, find the one with overflow
+                    var scrollable = messages.querySelector('[style*="overflow"]') || messages;
+                    scrollable.scrollTop = scrollable.scrollHeight;
+                }
+            });
         });
 
         // Start connection
