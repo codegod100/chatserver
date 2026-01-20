@@ -121,7 +121,7 @@ event_loop! = |ids, names| {
 filter_ids : List(U64), U64 -> List(U64)
 filter_ids = |ids, client_id| {
     var $result = []
-    var $i = 0u64
+    var $i = 0.U64
     while $i < ids.len() {
         match ids.get($i) {
             Ok(id) => {
@@ -140,7 +140,7 @@ filter_ids = |ids, client_id| {
 filter_names : List(U64), List(Str), U64 -> List(Str)
 filter_names = |ids, names, client_id| {
     var $result = []
-    var $i = 0u64
+    var $i = 0.U64
     while $i < ids.len() {
         match ids.get($i) {
             Ok(id) => {
